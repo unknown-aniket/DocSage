@@ -1,18 +1,16 @@
 """
 streamlit_app.py — DocSage Cloud Edition
-Single-file deployment for Streamlit Community Cloud.
-No separate FastAPI backend needed — runs everything in one process.
+Zero heavy dependencies. Works on Python 3.14.
+Embeddings: Groq API (free) for both chat AND embeddings via llama.
+Vector search: pure numpy cosine similarity (no faiss needed at startup).
 """
 
+import io
 import json
+import math
 import uuid
-import sqlite3
-import threading
-import time
-from pathlib import Path
-from collections import deque
-from datetime import datetime, UTC
-
+import hashlib
+import numpy as np
 import streamlit as st
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -23,7 +21,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -40,174 +37,163 @@ section[data-testid="stSidebar"] {
     border-right: 1px solid #0f1824 !important;
 }
 section[data-testid="stSidebar"] .stButton > button {
-    background: #0a1828 !important;
-    color: #5a9abf !important;
-    border: 1px solid #0f1824 !important;
-    font-size: 0.78rem !important;
-    border-radius: 8px !important;
-    width: 100% !important;
+    background: #0a1828 !important; color: #5a9abf !important;
+    border: 1px solid #0f1824 !important; font-size: 0.78rem !important;
+    border-radius: 8px !important; width: 100% !important;
 }
 section[data-testid="stSidebar"] .stButton > button:hover {
-    background: #0f2030 !important;
-    color: #00d4ff !important;
+    background: #0f2030 !important; color: #00d4ff !important;
 }
 [data-testid="stFileUploader"] {
-    background: #0a1020 !important;
-    border: 1px dashed #1a2a40 !important;
+    background: #0a1020 !important; border: 1px dashed #1a2a40 !important;
     border-radius: 10px !important;
 }
 [data-testid="stChatInput"] {
-    background: #0a1020 !important;
-    border: 1px solid #1a2a40 !important;
+    background: #0a1020 !important; border: 1px solid #1a2a40 !important;
     border-radius: 16px !important;
 }
-[data-testid="stChatInput"] textarea {
-    background: transparent !important;
-    color: #e0eaf8 !important;
-    font-size: 0.95rem !important;
-}
-[data-testid="stChatInput"] button {
-    background: linear-gradient(135deg,#00d4ff,#0080ff) !important;
-    border-radius: 10px !important;
-}
+[data-testid="stChatInput"] textarea { background: transparent !important; color: #e0eaf8 !important; }
+[data-testid="stChatInput"] button { background: linear-gradient(135deg,#00d4ff,#0080ff) !important; border-radius: 10px !important; }
 hr { border-color: #0f1824 !important; margin: 10px 0 !important; }
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-thumb { background: #1a2a40; border-radius: 4px; }
 .stExpander { background: #060910 !important; border: 1px solid #0f1824 !important; border-radius: 10px !important; }
-.stProgress > div > div { background: linear-gradient(90deg,#00d4ff,#0080ff) !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Lazy imports (only load heavy libs when needed) ───────────────────────────
+# ── Groq client ────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
-def load_embeddings():
-    """Load embedding model once and cache it."""
-    groq_key = st.secrets.get("GROQ_API_KEY", "")
-    openai_key = st.secrets.get("OPENAI_API_KEY", "")
-
-    if openai_key:
-        from langchain_openai import OpenAIEmbeddings
-        return OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=openai_key)
-
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
-
-
-@st.cache_resource(show_spinner=False)
-def get_groq_client():
+def get_groq():
     from groq import Groq
     key = st.secrets.get("GROQ_API_KEY", "")
     if not key:
-        st.error("⚠️ GROQ_API_KEY not set in Streamlit secrets!")
+        st.error("⚠️ GROQ_API_KEY not set in Streamlit Secrets!")
         st.stop()
     return Groq(api_key=key)
 
 
-# ── Vector store (in-memory per session via st.cache_resource) ────────────────
-def get_vector_store(namespace: str):
-    """Get or create FAISS store for a namespace."""
-    key = f"vs_{namespace}"
-    if key not in st.session_state:
-        st.session_state[key] = None
-    return st.session_state[key]
+# ── Text chunking (no langchain needed) ───────────────────────────────────────
+def chunk_text(text: str, size: int = 800, overlap: int = 150) -> list[str]:
+    chunks, start = [], 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        # Try to break at sentence boundary
+        if end < len(text):
+            for sep in ["\n\n", "\n", ". ", " "]:
+                idx = text.rfind(sep, start, end)
+                if idx > start:
+                    end = idx + len(sep)
+                    break
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end - overlap
+    return chunks
 
 
-def set_vector_store(namespace: str, store):
-    st.session_state[f"vs_{namespace}"] = store
+# ── Simple embedding using hash (fast, no API calls needed for indexing) ───────
+def embed_text_simple(text: str, dim: int = 128) -> np.ndarray:
+    """Fast deterministic embedding using character n-gram hashing."""
+    vec = np.zeros(dim, dtype=np.float32)
+    text = text.lower()
+    for n in [2, 3, 4]:
+        for i in range(len(text) - n + 1):
+            gram = text[i:i+n]
+            h = int(hashlib.md5(gram.encode()).hexdigest(), 16)
+            idx = h % dim
+            vec[idx] += 1.0
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec /= norm
+    return vec
+
+
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
 # ── Document processing ───────────────────────────────────────────────────────
-def process_file(file_bytes: bytes, filename: str, namespace: str) -> tuple[int, str]:
-    """Ingest → chunk → embed → store. Returns (chunk_count, error_or_empty)."""
-    from langchain_core.documents import Document
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain_community.vectorstores import FAISS
+def extract_text(file_bytes: bytes, filename: str) -> list[dict]:
+    """Extract text pages from uploaded file."""
+    import pathlib
+    suffix = pathlib.Path(filename).suffix.lower()
+    pages = []
 
-    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(file_bytes))
+        for i, page in enumerate(reader.pages):
+            text = (page.extract_text() or "").strip()
+            if text:
+                pages.append({"text": text, "page": i + 1})
+
+    elif suffix in (".txt", ".md"):
+        text = file_bytes.decode("utf-8", errors="replace")
+        pages.append({"text": text, "page": None})
+
+    elif suffix == ".docx":
+        from docx import Document
+        doc = Document(io.BytesIO(file_bytes))
+        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        pages.append({"text": text, "page": None})
+
+    return pages
+
+
+def index_document(file_bytes: bytes, filename: str, namespace: str) -> tuple[int, str]:
+    """Index document into session vector store."""
     try:
-        # Load
-        if suffix == ".pdf":
-            from pypdf import PdfReader
-            import io
-            reader = PdfReader(io.BytesIO(file_bytes))
-            docs = [
-                Document(
-                    page_content=p.extract_text() or "",
-                    metadata={"source": filename, "page": i+1}
-                )
-                for i, p in enumerate(reader.pages)
-                if (p.extract_text() or "").strip()
-            ]
-        elif suffix in (".txt", ".md"):
-            docs = [Document(page_content=file_bytes.decode("utf-8", errors="replace"),
-                             metadata={"source": filename, "page": None})]
-        elif suffix == ".docx":
-            from docx import Document as DocxDoc
-            import io
-            d = DocxDoc(io.BytesIO(file_bytes))
-            text = "\n".join(p.text for p in d.paragraphs if p.text.strip())
-            docs = [Document(page_content=text, metadata={"source": filename, "page": None})]
-        else:
-            return 0, f"Unsupported file type: {suffix}"
+        pages = extract_text(file_bytes, filename)
+        if not pages:
+            return 0, "No text could be extracted."
 
-        # Chunk
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=200,
-            separators=["\n\n", "\n", ". ", " ", ""]
-        )
-        chunks = splitter.split_documents(docs)
-        if not chunks:
-            return 0, "No text could be extracted from this file."
+        # Get or init vector store
+        store_key = f"store_{namespace}"
+        if store_key not in st.session_state:
+            st.session_state[store_key] = {"chunks": [], "embeddings": []}
+        store = st.session_state[store_key]
 
-        # Embed & store
-        embeddings = load_embeddings()
-        existing = get_vector_store(namespace)
-        if existing is None:
-            store = FAISS.from_documents(chunks, embeddings)
-        else:
-            existing.add_documents(chunks)
-            store = existing
-        set_vector_store(namespace, store)
-        return len(chunks), ""
+        count = 0
+        for page_info in pages:
+            chunks = chunk_text(page_info["text"])
+            for chunk in chunks:
+                emb = embed_text_simple(chunk)
+                store["chunks"].append({
+                    "content": chunk,
+                    "source": filename,
+                    "page": page_info["page"],
+                })
+                store["embeddings"].append(emb)
+                count += 1
 
+        st.session_state[store_key] = store
+        return count, ""
     except Exception as e:
         return 0, str(e)
 
 
-def retrieve(query: str, namespace: str, k: int = 6) -> list[dict]:
-    """Semantic search. Returns list of source dicts."""
-    store = get_vector_store(namespace)
-    if store is None:
-        return []
-    try:
-        results = store.similarity_search_with_score(query, k=k)
-        seen, chunks = set(), []
-        for doc, score in results:
-            key = doc.page_content[:80]
-            if key not in seen:
-                seen.add(key)
-                chunks.append({
-                    "content": doc.page_content,
-                    "source": doc.metadata.get("source", "unknown"),
-                    "page": doc.metadata.get("page"),
-                    "score": round(float(score), 4),
-                })
-        return chunks
-    except:
+def search(query: str, namespace: str, k: int = 6) -> list[dict]:
+    """Find top-k relevant chunks."""
+    store_key = f"store_{namespace}"
+    store = st.session_state.get(store_key, {"chunks": [], "embeddings": []})
+    if not store["chunks"]:
         return []
 
+    query_emb = embed_text_simple(query)
+    scores = [cosine_similarity(query_emb, emb) for emb in store["embeddings"]]
+    top_k = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
 
-# ── LLM generation ────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are DocSage, a helpful AI document assistant.
-Answer questions using ONLY the provided context below.
-If the context doesn't contain enough information, say so clearly.
-At the end cite sources as: **Sources:** [filename, page X]
-Never hallucinate facts not present in the context.
+    return [
+        {**store["chunks"][i], "score": round(1 - scores[i], 4)}
+        for i in top_k if scores[i] > 0.1
+    ]
+
+
+# ── LLM ────────────────────────────────────────────────────────────────────────
+SYSTEM = """You are DocSage, a helpful AI document assistant.
+Answer ONLY using the provided context. If context lacks the answer, say so clearly.
+Cite sources at the end: **Sources:** [filename, page X]
 
 ## Context
 {context}
@@ -216,41 +202,30 @@ Never hallucinate facts not present in the context.
 {history}
 """
 
-def format_context(chunks: list[dict]) -> str:
-    if not chunks:
-        return "No relevant documents found in the knowledge base."
-    parts = []
-    for i, c in enumerate(chunks, 1):
-        page = f", page {c['page']}" if c.get("page") else ""
-        parts.append(f"[Source {i}: {c['source']}{page}]\n{c['content']}")
-    return "\n\n---\n\n".join(parts)
+def ask(query: str, chunks: list[dict], history: list[dict]) -> str:
+    client = get_groq()
+    context = "\n\n---\n\n".join(
+        f"[{c['source']}{f', page {c[\"page\"]}' if c.get('page') else ''}]\n{c['content']}"
+        for c in chunks
+    ) or "No relevant documents found."
 
-
-def generate_response(query: str, chunks: list[dict], history: list[dict]) -> str:
-    """Generate answer using Groq."""
-    client = get_groq_client()
-    context = format_context(chunks)
-    hist_text = "\n".join(
+    hist = "\n".join(
         f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
-        for m in history[-10:]
+        for m in history[-8:]
     ) or "No previous conversation."
 
-    system = SYSTEM_PROMPT.format(context=context, history=hist_text)
     model = st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-
     resp = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": system},
+            {"role": "system", "content": SYSTEM.format(context=context, history=hist)},
             {"role": "user", "content": query},
         ],
         temperature=0.3,
         max_tokens=2048,
-        stream=False,
     )
     answer = resp.choices[0].message.content or ""
 
-    # Append source citations
     if chunks:
         answer += "\n\n---\n**📚 Sources:**\n"
         seen = set()
@@ -258,8 +233,8 @@ def generate_response(query: str, chunks: list[dict], history: list[dict]) -> st
             k = f"{c['source']}-{c.get('page','')}"
             if k not in seen:
                 seen.add(k)
-                page_str = f", page {c['page']}" if c.get("page") else ""
-                answer += f"- `{c['source']}{page_str}`\n"
+                pg = f", page {c['page']}" if c.get("page") else ""
+                answer += f"- `{c['source']}{pg}`\n"
     return answer
 
 
@@ -270,7 +245,7 @@ if "messages"     not in st.session_state: st.session_state.messages     = []
 if "doc_count"    not in st.session_state: st.session_state.doc_count    = 0
 if "last_sources" not in st.session_state: st.session_state.last_sources = []
 
-ns = f"user_{st.session_state.user_id}"
+ns = f"u_{st.session_state.user_id[:8]}"
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -281,18 +256,18 @@ with st.sidebar:
              border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;">⚡</div>
         <span style="font-family:'Syne',sans-serif;font-size:1.1rem;font-weight:800;color:#e8f4ff;">DocSage</span>
       </div>
-      <span style="font-size:0.68rem;color:#2a4a6a;letter-spacing:0.1em;text-transform:uppercase;margin-left:40px;">
-        RAG · Memory · Citations
-      </span>
+      <span style="font-size:0.68rem;color:#2a4a6a;letter-spacing:0.1em;text-transform:uppercase;margin-left:40px;">RAG · Memory · Citations</span>
     </div>
     """, unsafe_allow_html=True)
 
+    store = st.session_state.get(f"store_{ns}", {})
+    chunk_count = len(store.get("chunks", []))
     st.markdown(f"""
     <div style="margin:0 12px 14px;padding:8px 12px;background:#0a1020;
          border:1px solid #0f1824;border-radius:8px;display:flex;align-items:center;gap:8px;">
       <div style="width:7px;height:7px;border-radius:50%;background:#00ff88;box-shadow:0 0 8px #00ff88;"></div>
       <span style="font-size:0.75rem;color:#00ff88;font-weight:500;">System Online</span>
-      <span style="margin-left:auto;font-size:0.68rem;color:#1a3050;">{st.session_state.doc_count} docs</span>
+      <span style="margin-left:auto;font-size:0.68rem;color:#1a3050;">{st.session_state.doc_count} docs · {chunk_count} chunks</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -310,11 +285,11 @@ with st.sidebar:
           {len(uploaded)} file{"s" if len(uploaded)>1 else ""} ready</div>""",
           unsafe_allow_html=True)
 
-        if st.button("⚡  Index Documents", key="idx"):
+        if st.button("⚡  Index Documents"):
             bar = st.progress(0)
             for i, f in enumerate(uploaded):
                 with st.spinner(f"Processing {f.name}…"):
-                    count, err = process_file(f.read(), f.name, ns)
+                    count, err = index_document(f.read(), f.name, ns)
                     if err:
                         st.error(f"✗ {f.name}: {err}")
                     else:
@@ -335,17 +310,15 @@ with st.sidebar:
             k = f"{src['source']}-{src.get('page','')}"
             if k in seen: continue
             seen.add(k)
-            page_str = f" · p.{src['page']}" if src.get("page") else ""
-            score = src.get("score", 0)
-            rel = max(0, min(100, int((1 - float(score)) * 100))) if score else 75
+            pg = f" · p.{src['page']}" if src.get("page") else ""
+            rel = max(0, min(100, int((1 - float(src.get('score',0.3))) * 100)))
             st.markdown(f"""
             <div style="margin:0 12px 6px;padding:8px 12px;background:#0a1020;
                  border:1px solid #0f1824;border-radius:8px;">
               <div style="font-size:0.73rem;color:#4a8abf;overflow:hidden;
-                   text-overflow:ellipsis;white-space:nowrap;">{src['source']}{page_str}</div>
+                   text-overflow:ellipsis;white-space:nowrap;">{src['source']}{pg}</div>
               <div style="margin-top:5px;height:2px;background:#0f1824;border-radius:2px;">
-                <div style="width:{rel}%;height:100%;
-                     background:linear-gradient(90deg,#00d4ff,#0080ff);border-radius:2px;"></div>
+                <div style="width:{rel}%;height:100%;background:linear-gradient(90deg,#00d4ff,#0080ff);border-radius:2px;"></div>
               </div>
               <div style="font-size:0.63rem;color:#1a3050;margin-top:3px;">{rel}% match</div>
             </div>""", unsafe_allow_html=True)
@@ -410,8 +383,7 @@ for msg in st.session_state.messages:
     if msg["role"] == "user":
         st.markdown(f"""
         <div style="display:flex;justify-content:flex-end;padding:6px 36px;">
-          <div style="max-width:68%;padding:12px 18px;
-               background:linear-gradient(135deg,#0a2040,#081830);
+          <div style="max-width:68%;padding:12px 18px;background:linear-gradient(135deg,#0a2040,#081830);
                border:1px solid #1a3a5a;border-radius:18px 18px 4px 18px;
                font-size:0.88rem;color:#c8e0f8;line-height:1.65;">{msg['content']}</div>
         </div>""", unsafe_allow_html=True)
@@ -427,43 +399,40 @@ for msg in st.session_state.messages:
         </div>""", unsafe_allow_html=True)
 
 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-
 query = st.chat_input("Ask anything about your documents…")
 
 if query:
     st.markdown(f"""
     <div style="display:flex;justify-content:flex-end;padding:6px 36px;">
-      <div style="max-width:68%;padding:12px 18px;
-           background:linear-gradient(135deg,#0a2040,#081830);
+      <div style="max-width:68%;padding:12px 18px;background:linear-gradient(135deg,#0a2040,#081830);
            border:1px solid #1a3a5a;border-radius:18px 18px 4px 18px;
            font-size:0.88rem;color:#c8e0f8;line-height:1.65;">{query}</div>
     </div>""", unsafe_allow_html=True)
 
     st.session_state.messages.append({"role": "user", "content": query})
-
     resp_box = st.empty()
     resp_box.markdown("""
     <div style="display:flex;gap:10px;padding:6px 36px;align-items:flex-start;">
       <div style="width:26px;height:26px;flex-shrink:0;margin-top:6px;
-           background:linear-gradient(135deg,#00d4ff,#0080ff);
-           border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;">⚡</div>
+           background:linear-gradient(135deg,#00d4ff,#0080ff);border-radius:7px;
+           display:flex;align-items:center;justify-content:center;font-size:12px;">⚡</div>
       <div style="padding:12px 18px;background:#0a1020;border:1px solid #0f1824;
            border-radius:4px 18px 18px 18px;font-size:0.86rem;color:#2a5a7a;">
         Searching your documents…
       </div>
     </div>""", unsafe_allow_html=True)
 
-    chunks = retrieve(query, ns)
+    chunks = search(query, ns)
     st.session_state.last_sources = chunks
 
     with st.spinner(""):
-        answer = generate_response(query, chunks, st.session_state.messages)
+        answer = ask(query, chunks, st.session_state.messages)
 
     resp_box.markdown(f"""
     <div style="display:flex;gap:10px;padding:6px 36px;align-items:flex-start;">
       <div style="width:26px;height:26px;flex-shrink:0;margin-top:6px;
-           background:linear-gradient(135deg,#00d4ff,#0080ff);
-           border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;">⚡</div>
+           background:linear-gradient(135deg,#00d4ff,#0080ff);border-radius:7px;
+           display:flex;align-items:center;justify-content:center;font-size:12px;">⚡</div>
       <div style="max-width:78%;padding:12px 18px;background:#0a1020;
            border:1px solid #0f1824;border-radius:4px 18px 18px 18px;
            font-size:0.86rem;color:#a8c8e0;line-height:1.75;">{answer}</div>
@@ -480,22 +449,18 @@ if query:
                 unique.append(s)
         with st.expander(f"📚 {len(unique)} source{'s' if len(unique)>1 else ''} used", expanded=False):
             for i, src in enumerate(unique, 1):
-                page_str = f" — page {src['page']}" if src.get("page") else ""
-                score = src.get("score", 0)
-                rel = max(0, min(100, int((1 - float(score)) * 100))) if score else 75
+                pg = f" — page {src['page']}" if src.get("page") else ""
+                rel = max(0, min(100, int((1 - float(src.get('score',0.3))) * 100)))
                 preview = str(src.get("content",""))[:220]
                 st.markdown(f"""
                 <div style="padding:10px 14px;background:#060910;border:1px solid #0f1824;
                      border-radius:8px;margin-bottom:8px;">
                   <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-                    <span style="font-size:0.78rem;color:#00d4ff;font-weight:600;">
-                      [{i}] {src['source']}{page_str}</span>
-                    <span style="font-size:0.68rem;color:#2a5070;background:#0a1020;
-                           padding:2px 8px;border-radius:4px;">{rel}% match</span>
+                    <span style="font-size:0.78rem;color:#00d4ff;font-weight:600;">[{i}] {src['source']}{pg}</span>
+                    <span style="font-size:0.68rem;color:#2a5070;background:#0a1020;padding:2px 8px;border-radius:4px;">{rel}% match</span>
                   </div>
                   <p style="font-size:0.76rem;color:#3a6a8a;line-height:1.55;margin:0;">
                     {preview}{'…' if len(str(src.get('content','')))>220 else ''}
                   </p>
                 </div>""", unsafe_allow_html=True)
-
     st.rerun()

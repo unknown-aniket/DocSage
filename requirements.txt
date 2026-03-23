@@ -23,3 +23,12 @@ streamlit==1.38.0
 pydantic==2.9.1
 tiktoken==0.7.0
 numpy==1.26.4
+
+# Works with Python 3.14 on Streamlit Cloud
+groq>=0.11.0
+streamlit>=1.38.0
+pypdf>=4.3.1
+python-docx>=1.1.2
+langchain-text-splitters>=0.2.4
+faiss-cpu>=1.13.0
+numpy>=2.0.0
