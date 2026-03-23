@@ -1,14 +1,25 @@
+# Core LLM & RAG
 langchain==0.2.16
 langchain-openai==0.1.25
 langchain-community==0.2.16
 langchain-text-splitters==0.2.4
 groq==0.11.0
-faiss-cpu==1.8.0
+
+# Vector Store (latest compatible version)
+faiss-cpu==1.13.0
+
+# Document Loading
 pypdf==4.3.1
 python-docx==1.1.2
-streamlit==1.38.0
+
+# Embeddings (no torch needed - uses ONNX backend)
 sentence-transformers==3.1.1
-torch==2.4.1+cpu
+transformers==4.44.2
+
+# Frontend
+streamlit==1.38.0
+
+# Utilities
 pydantic==2.9.1
 tiktoken==0.7.0
 numpy==1.26.4
