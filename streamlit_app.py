@@ -1,593 +1,770 @@
 """
-streamlit_app.py - DocSage Cloud Edition
-Python 3.12 | Groq LLM | FAISS vector search | No heavy dependencies
+DocSage — Premium Document Intelligence UI
+Aesthetic: Refined editorial — warm ivory, deep charcoal, gold accents
+Typography: Cormorant Garamond (display) + DM Sans (body)
 """
 
-import io
-import uuid
-import hashlib
+import io, uuid, hashlib
 import numpy as np
 import streamlit as st
 from pathlib import Path
 
-# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="DocSage",
-    page_icon="⚡",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-html, body, [class*="css"], .stApp {
-    background-color: #080c14 !important;
-    font-family: 'DM Sans', sans-serif !important;
-    color: #c8d6e8 !important;
+:root {
+  --ivory:    #f8f5ef;
+  --ivory2:   #f2ede4;
+  --ivory3:   #ede6d9;
+  --charcoal: #1c1917;
+  --stone:    #78716c;
+  --muted:    #a8a29e;
+  --border:   #e7e0d5;
+  --gold:     #b5975a;
+  --gold2:    #d4af70;
+  --white:    #ffffff;
+  --shadow:   0 1px 3px rgba(28,25,23,0.06), 0 4px 16px rgba(28,25,23,0.04);
+  --shadow2:  0 2px 8px rgba(28,25,23,0.10), 0 12px 32px rgba(28,25,23,0.06);
 }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, [class*="css"], .stApp {
+    background: var(--ivory) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    color: var(--charcoal) !important;
+}
+
 #MainMenu, footer, header { visibility: hidden; }
 .stDeployButton, [data-testid="stToolbar"] { display: none !important; }
 .block-container { padding-top: 0 !important; max-width: 100% !important; }
+
+/* ── Sidebar ─────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background-color: #060910 !important;
-    border-right: 1px solid #0f1824 !important;
+    background: var(--white) !important;
+    border-right: 1px solid var(--border) !important;
+    box-shadow: 2px 0 24px rgba(28,25,23,0.05) !important;
 }
+section[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0 !important;
+}
+
+/* Sidebar buttons */
 section[data-testid="stSidebar"] .stButton > button {
-    background: #0a1828 !important; color: #5a9abf !important;
-    border: 1px solid #0f1824 !important; font-size: 0.78rem !important;
-    border-radius: 8px !important; width: 100% !important;
+    background: var(--ivory2) !important;
+    color: var(--stone) !important;
+    border: 1px solid var(--border) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.76rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.02em !important;
+    border-radius: 8px !important;
+    width: 100% !important;
+    padding: 8px 12px !important;
+    transition: all 0.2s ease !important;
 }
 section[data-testid="stSidebar"] .stButton > button:hover {
-    background: #0f2030 !important; color: #00d4ff !important;
+    background: var(--charcoal) !important;
+    color: var(--ivory) !important;
+    border-color: var(--charcoal) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(28,25,23,0.15) !important;
 }
+
+/* Index button special */
+div[data-testid="stButton"]:has(button[kind="primary"]) button,
+.index-btn > button {
+    background: var(--charcoal) !important;
+    color: var(--ivory) !important;
+    border: none !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.04em !important;
+    font-size: 0.76rem !important;
+    text-transform: uppercase !important;
+    border-radius: 8px !important;
+    padding: 10px 16px !important;
+    transition: all 0.2s ease !important;
+    width: 100% !important;
+}
+div[data-testid="stButton"]:has(button[kind="primary"]) button:hover {
+    background: var(--gold) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 20px rgba(181,151,90,0.3) !important;
+}
+
+/* File uploader */
 [data-testid="stFileUploader"] {
-    background: #0a1020 !important;
-    border: 1px dashed #1a2a40 !important;
-    border-radius: 10px !important;
+    background: var(--ivory2) !important;
+    border: 1.5px dashed var(--border) !important;
+    border-radius: 12px !important;
+    transition: border-color 0.2s !important;
 }
+[data-testid="stFileUploader"]:hover {
+    border-color: var(--gold) !important;
+}
+
+/* Chat input */
 [data-testid="stChatInput"] {
-    background: #0a1020 !important;
-    border: 1px solid #1a2a40 !important;
+    background: var(--white) !important;
+    border: 1.5px solid var(--border) !important;
     border-radius: 16px !important;
+    box-shadow: var(--shadow2) !important;
+    transition: border-color 0.2s, box-shadow 0.2s !important;
+}
+[data-testid="stChatInput"]:focus-within {
+    border-color: var(--gold) !important;
+    box-shadow: 0 0 0 3px rgba(181,151,90,0.12), var(--shadow2) !important;
 }
 [data-testid="stChatInput"] textarea {
     background: transparent !important;
-    color: #e0eaf8 !important;
+    color: var(--charcoal) !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.93rem !important;
 }
 [data-testid="stChatInput"] button {
-    background: linear-gradient(135deg,#00d4ff,#0080ff) !important;
+    background: var(--charcoal) !important;
     border-radius: 10px !important;
+    transition: background 0.2s !important;
 }
-hr { border-color: #0f1824 !important; margin: 10px 0 !important; }
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-thumb { background: #1a2a40; border-radius: 4px; }
+[data-testid="stChatInput"] button:hover {
+    background: var(--gold) !important;
+}
+
+/* Divider */
+hr { border-color: var(--border) !important; margin: 14px 0 !important; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ivory3); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* Expander */
 .stExpander {
-    background: #060910 !important;
-    border: 1px solid #0f1824 !important;
+    background: var(--white) !important;
+    border: 1px solid var(--border) !important;
     border-radius: 10px !important;
+    box-shadow: var(--shadow) !important;
 }
+
+/* Progress */
+.stProgress > div > div {
+    background: linear-gradient(90deg, var(--charcoal), var(--gold)) !important;
+    border-radius: 4px !important;
+}
+
+/* Alerts */
+.stSuccess {
+    background: #f0fdf4 !important;
+    border-left: 3px solid #22c55e !important;
+    border-radius: 0 8px 8px 0 !important;
+    color: #166534 !important;
+}
+.stError {
+    background: #fff7f0 !important;
+    border-left: 3px solid var(--gold) !important;
+    border-radius: 0 8px 8px 0 !important;
+    color: #7c2d12 !important;
+}
+
+/* ── Animations ──────────────────────────── */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+@keyframes slideRight {
+    from { opacity: 0; transform: translateX(-12px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes shimmer {
+    0%   { opacity: 0.4; }
+    50%  { opacity: 1; }
+    100% { opacity: 0.4; }
+}
+@keyframes dotPulse {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+    40%            { transform: scale(1); opacity: 1; }
+}
+@keyframes goldLine {
+    from { width: 0; }
+    to   { width: 40px; }
+}
+
+.anim-fade-up   { animation: fadeUp 0.4s cubic-bezier(0.16,1,0.3,1) forwards; }
+.anim-fade-in   { animation: fadeIn 0.3s ease forwards; }
+.anim-slide-r   { animation: slideRight 0.35s cubic-bezier(0.16,1,0.3,1) forwards; }
+
+.dot {
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--muted);
+    margin: 0 2px;
+    animation: dotPulse 1.4s ease infinite;
+}
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GROQ CLIENT
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Groq ──────────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
-def get_groq_client():
+def get_groq():
     from groq import Groq
     key = st.secrets.get("GROQ_API_KEY", "")
     if not key:
-        st.error("⚠️ GROQ_API_KEY not found in Streamlit Secrets. Add it via Settings → Secrets.")
+        st.error("⚠ GROQ_API_KEY not set. Add it in Render → Environment Variables.")
         st.stop()
     return Groq(api_key=key)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DOCUMENT PROCESSING
-# ══════════════════════════════════════════════════════════════════════════════
-def extract_text_from_file(file_bytes: bytes, filename: str) -> list[dict]:
-    """Extract text from PDF, DOCX, TXT, MD. Returns list of {text, page}."""
-    suffix = Path(filename).suffix.lower()
-    pages = []
-
-    if suffix == ".pdf":
-        from pypdf import PdfReader
-        reader = PdfReader(io.BytesIO(file_bytes))
-        for i, page in enumerate(reader.pages):
-            text = (page.extract_text() or "").strip()
-            if text:
-                pages.append({"text": text, "page": i + 1})
-
-    elif suffix in (".txt", ".md"):
-        text = file_bytes.decode("utf-8", errors="replace").strip()
-        if text:
-            pages.append({"text": text, "page": None})
-
-    elif suffix == ".docx":
-        from docx import Document as DocxDocument
-        doc = DocxDocument(io.BytesIO(file_bytes))
-        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        if text:
-            pages.append({"text": text, "page": None})
-
-    return pages
-
-
-def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
-    """Split text into overlapping chunks at natural boundaries."""
-    if len(text) <= chunk_size:
-        return [text]
-
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        # Try to break at natural boundary
-        if end < len(text):
-            for sep in ["\n\n", "\n", ". ", "! ", "? ", ", ", " "]:
-                idx = text.rfind(sep, start + chunk_size // 2, end)
-                if idx > start:
-                    end = idx + len(sep)
-                    break
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        start = end - overlap
-        if start >= len(text):
-            break
-    return chunks
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# EMBEDDINGS — pure numpy, no API calls needed
-# ══════════════════════════════════════════════════════════════════════════════
-def embed(text: str, dim: int = 256) -> np.ndarray:
-    """
-    Fast deterministic text embedding using character n-gram hashing.
-    No external API or model required. Works offline.
-    """
+# ── Vector search (pure numpy) ────────────────────────────────────────────────
+def embed(text: str, dim=256) -> np.ndarray:
     vec = np.zeros(dim, dtype=np.float32)
-    text_lower = text.lower()
-    # Use multiple n-gram sizes for better coverage
-    for n in [2, 3, 4, 5]:
-        for i in range(len(text_lower) - n + 1):
-            gram = text_lower[i:i + n]
-            h = int(hashlib.sha256(gram.encode()).hexdigest()[:8], 16)
-            idx = h % dim
-            vec[idx] += 1.0
+    t = text.lower()
+    for n in [2, 3, 4]:
+        for i in range(len(t) - n + 1):
+            h = int(hashlib.md5(t[i:i+n].encode()).hexdigest()[:8], 16)
+            vec[h % dim] += 1.0
     norm = np.linalg.norm(vec)
     return vec / norm if norm > 0 else vec
 
+def cosine(a, b): return float(np.dot(a, b))
 
-def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b))  # vectors are pre-normalised
+def chunk_text(text, size=900, overlap=150):
+    if len(text) <= size: return [text]
+    chunks, start = [], 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        if end < len(text):
+            for sep in ["\n\n", "\n", ". ", " "]:
+                idx = text.rfind(sep, start + size//2, end)
+                if idx > start: end = idx + len(sep); break
+        c = text[start:end].strip()
+        if c: chunks.append(c)
+        start = end - overlap
+    return chunks
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# IN-SESSION VECTOR STORE
-# ══════════════════════════════════════════════════════════════════════════════
-def get_store(ns: str) -> dict:
-    key = f"vs_{ns}"
-    if key not in st.session_state:
-        st.session_state[key] = {
-            "chunks": [],       # list of {content, source, page}
-            "embeddings": [],   # list of np.ndarray
-        }
-    return st.session_state[key]
+# ── Store ──────────────────────────────────────────────────────────────────────
+def get_store(ns):
+    k = f"vs_{ns}"
+    if k not in st.session_state:
+        st.session_state[k] = {"chunks": [], "embs": []}
+    return st.session_state[k]
 
-
-def add_to_store(ns: str, chunks: list[str], source: str, page) -> int:
-    store = get_store(ns)
-    for chunk in chunks:
-        store["chunks"].append({"content": chunk, "source": source, "page": page})
-        store["embeddings"].append(embed(chunk))
+def add_to_store(ns, chunks, source, page):
+    s = get_store(ns)
+    for c in chunks:
+        s["chunks"].append({"content": c, "source": source, "page": page})
+        s["embs"].append(embed(c))
     return len(chunks)
 
-
-def semantic_search(query: str, ns: str, k: int = 6) -> list[dict]:
-    store = get_store(ns)
-    if not store["chunks"]:
-        return []
-    q_emb = embed(query)
-    scores = [cosine_sim(q_emb, e) for e in store["embeddings"]]
-    top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
-    results = []
-    for i in top_idx:
-        if scores[i] > 0.05:
-            results.append({
-                **store["chunks"][i],
-                "score": round(float(scores[i]), 4),
-            })
-    return results
+def search_store(query, ns, k=6):
+    s = get_store(ns)
+    if not s["chunks"]: return []
+    q = embed(query)
+    scores = [cosine(q, e) for e in s["embs"]]
+    top = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
+    return [{**s["chunks"][i], "score": round(float(scores[i]), 4)}
+            for i in top if scores[i] > 0.05]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DOCUMENT INDEXING
-# ══════════════════════════════════════════════════════════════════════════════
-def index_file(file_bytes: bytes, filename: str, ns: str) -> tuple[int, str]:
+# ── File loading ───────────────────────────────────────────────────────────────
+def load_file(data, name):
+    sfx = Path(name).suffix.lower()
+    pages = []
+    if sfx == ".pdf":
+        from pypdf import PdfReader
+        for i, p in enumerate(PdfReader(io.BytesIO(data)).pages):
+            t = (p.extract_text() or "").strip()
+            if t: pages.append({"text": t, "page": i+1})
+    elif sfx in (".txt", ".md"):
+        pages.append({"text": data.decode("utf-8", errors="replace"), "page": None})
+    elif sfx == ".docx":
+        from docx import Document
+        doc = Document(io.BytesIO(data))
+        t = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        pages.append({"text": t, "page": None})
+    return pages
+
+def index_file(data, name, ns):
     try:
-        pages = extract_text_from_file(file_bytes, filename)
-        if not pages:
-            return 0, "Could not extract any text from this file."
-        total = 0
-        for page_info in pages:
-            chunks = chunk_text(page_info["text"])
-            count = add_to_store(ns, chunks, filename, page_info["page"])
-            total += count
+        pages = load_file(data, name)
+        if not pages: return 0, "No text found."
+        total = sum(add_to_store(ns, chunk_text(p["text"]), name, p["page"]) for p in pages)
         return total, ""
     except Exception as e:
         return 0, str(e)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LLM RESPONSE
-# ══════════════════════════════════════════════════════════════════════════════
-SYSTEM_PROMPT = """You are DocSage, a precise and helpful AI document assistant.
+# ── LLM ───────────────────────────────────────────────────────────────────────
+SYSTEM = """You are DocSage, a precise and professional document assistant.
+Answer ONLY from the provided context. If information isn't in the context, say so clearly.
+Be concise, accurate, and professional. Use markdown formatting when appropriate.
+End responses with cited sources: **Sources:** `filename, page X`
 
-RULES:
-1. Answer ONLY using the CONTEXT provided below.
-2. If the context does not contain the answer, say: "I couldn't find that in the uploaded documents."
-3. Be concise but thorough. Use markdown formatting where helpful.
-4. At the end of your answer, always cite your sources like this:
-   **Sources:** `filename.pdf, page 3`
-
-## CONTEXT
+## Context
 {context}
 
-## CONVERSATION HISTORY
+## Conversation History
 {history}
 """
 
-def build_context(chunks: list[dict]) -> str:
-    if not chunks:
-        return "No relevant documents found in the knowledge base."
-    parts = []
-    for i, c in enumerate(chunks, 1):
-        page_str = f", page {c['page']}" if c.get("page") else ""
-        parts.append(f"[{i}] Source: {c['source']}{page_str}\n{c['content']}")
-    return "\n\n---\n\n".join(parts)
-
-
-def build_history(messages: list[dict], max_turns: int = 8) -> str:
-    recent = messages[-max_turns * 2:] if len(messages) > max_turns * 2 else messages
-    lines = []
-    for m in recent:
-        role = "User" if m["role"] == "user" else "Assistant"
-        lines.append(f"{role}: {m['content']}")
-    return "\n".join(lines) if lines else "No previous conversation."
-
-
-def generate_answer(query: str, chunks: list[dict], messages: list[dict]) -> str:
-    client = get_groq_client()
+def generate(query, chunks, messages):
+    client = get_groq()
+    ctx = "\n\n---\n\n".join(
+        f"[{c['source']}{f', page {c[\"page\"]}' if c.get('page') else ''}]\n{c['content']}"
+        for c in chunks
+    ) or "No documents have been uploaded yet."
+    hist = "\n".join(
+        f"{'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
+        for m in messages[-8:]
+    ) or "No previous conversation."
     model = st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-
-    context = build_context(chunks)
-    history = build_history(messages)
-
-    response = client.chat.completions.create(
+    r = get_groq().chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.format(
-                context=context, history=history
-            )},
+            {"role": "system", "content": SYSTEM.format(context=ctx, history=hist)},
             {"role": "user", "content": query},
         ],
-        temperature=0.2,
-        max_tokens=2048,
+        temperature=0.2, max_tokens=2048,
     )
-    return response.choices[0].message.content or "No response generated."
+    ans = r.choices[0].message.content or ""
+    if chunks:
+        ans += "\n\n---\n**Sources:**\n"
+        seen = set()
+        for c in chunks:
+            k = f"{c['source']}-{c.get('page','')}"
+            if k not in seen:
+                seen.add(k)
+                pg = f", page {c['page']}" if c.get("page") else ""
+                ans += f"- `{c['source']}{pg}`\n"
+    return ans
+
+
+# ── Session state ──────────────────────────────────────────────────────────────
+defaults = [("uid", str(uuid.uuid4())), ("sid", str(uuid.uuid4())),
+            ("messages", []), ("doc_count", 0), ("last_src", [])]
+for k, v in defaults:
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+ns = f"u_{st.session_state.uid[:8]}"
+store = get_store(ns)
+n_chunks = len(store["chunks"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UI HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-def user_bubble(text: str):
-    st.markdown(f"""
-    <div style="display:flex;justify-content:flex-end;padding:6px 36px;">
-      <div style="max-width:70%;padding:12px 18px;
-           background:linear-gradient(135deg,#0a2040,#081830);
-           border:1px solid #1a3a5a;border-radius:18px 18px 4px 18px;
-           font-size:0.88rem;color:#c8e0f8;line-height:1.65;">
-        {text}
-      </div>
-    </div>""", unsafe_allow_html=True)
-
-
-def ai_bubble(text: str, cursor: bool = False):
-    tail = "▌" if cursor else ""
-    st.markdown(f"""
-    <div style="display:flex;gap:10px;padding:6px 36px;align-items:flex-start;">
-      <div style="width:26px;height:26px;flex-shrink:0;margin-top:6px;
-           background:linear-gradient(135deg,#00d4ff,#0080ff);
-           border-radius:7px;display:flex;align-items:center;
-           justify-content:center;font-size:12px;">⚡</div>
-      <div style="max-width:78%;padding:12px 18px;background:#0a1020;
-           border:1px solid #0f1824;border-radius:4px 18px 18px 18px;
-           font-size:0.86rem;color:#a8c8e0;line-height:1.75;">
-        {text}{tail}
-      </div>
-    </div>""", unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SESSION STATE
-# ══════════════════════════════════════════════════════════════════════════════
-if "user_id"      not in st.session_state: st.session_state.user_id      = str(uuid.uuid4())
-if "session_id"   not in st.session_state: st.session_state.session_id   = str(uuid.uuid4())
-if "messages"     not in st.session_state: st.session_state.messages     = []
-if "doc_count"    not in st.session_state: st.session_state.doc_count    = 0
-if "last_sources" not in st.session_state: st.session_state.last_sources = []
-
-ns = f"u_{st.session_state.user_id[:8]}"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR
+#  SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
 
-    # Logo
+    # ── Brand header ──────────────────────────────────────────────────────────
     st.markdown("""
-    <div style="padding:20px 16px 12px;">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
-        <div style="width:32px;height:32px;
-             background:linear-gradient(135deg,#00d4ff,#0080ff);
-             border-radius:9px;display:flex;align-items:center;
-             justify-content:center;font-size:16px;">⚡</div>
-        <span style="font-family:'Syne',sans-serif;font-size:1.15rem;
-              font-weight:800;color:#e8f4ff;letter-spacing:-0.01em;">DocSage</span>
+    <div style="padding:28px 22px 20px;background:var(--white);
+         border-bottom:1px solid var(--border);">
+      <div class="anim-slide-r" style="display:flex;align-items:center;gap:12px;">
+        <div style="width:36px;height:36px;background:var(--charcoal);
+             border-radius:10px;display:flex;align-items:center;
+             justify-content:center;flex-shrink:0;">
+          <span style="font-family:'Cormorant Garamond',serif;font-size:18px;
+                color:var(--gold2);font-weight:600;line-height:1;">◈</span>
+        </div>
+        <div>
+          <div style="font-family:'Cormorant Garamond',serif;font-size:1.25rem;
+               font-weight:600;color:var(--charcoal);letter-spacing:-0.01em;
+               line-height:1.1;">DocSage</div>
+          <div style="font-size:0.62rem;color:var(--muted);letter-spacing:0.12em;
+               text-transform:uppercase;margin-top:1px;font-weight:500;">
+            Document Intelligence
+          </div>
+        </div>
       </div>
-      <span style="font-size:0.67rem;color:#2a4a6a;letter-spacing:0.1em;
-            text-transform:uppercase;padding-left:44px;">
-        RAG · Memory · Citations
-      </span>
     </div>
     """, unsafe_allow_html=True)
 
-    # Status
-    store = get_store(ns)
-    chunk_count = len(store["chunks"])
+    # ── Status ────────────────────────────────────────────────────────────────
     st.markdown(f"""
-    <div style="margin:0 12px 14px;padding:9px 14px;background:#0a1020;
-         border:1px solid #0f1824;border-radius:9px;
-         display:flex;align-items:center;gap:8px;">
-      <div style="width:8px;height:8px;border-radius:50%;
-           background:#00ff88;box-shadow:0 0 8px #00ff88;flex-shrink:0;"></div>
-      <span style="font-size:0.75rem;color:#00ff88;font-weight:500;">Online</span>
-      <span style="margin-left:auto;font-size:0.68rem;color:#1a3050;">
-        {st.session_state.doc_count} doc{"s" if st.session_state.doc_count != 1 else ""}
-        · {chunk_count} chunks
+    <div class="anim-fade-in" style="margin:16px 16px 12px;padding:10px 14px;
+         background:var(--ivory2);border:1px solid var(--border);border-radius:10px;
+         display:flex;align-items:center;gap:10px;">
+      <div style="position:relative;width:8px;height:8px;flex-shrink:0;">
+        <div style="width:8px;height:8px;border-radius:50%;background:#22c55e;"></div>
+        <div style="position:absolute;inset:0;border-radius:50%;background:#22c55e;
+             animation:shimmer 2s ease infinite;opacity:0.4;transform:scale(1.8);"></div>
+      </div>
+      <span style="font-size:0.74rem;color:var(--stone);font-weight:500;">
+        System ready
+      </span>
+      <span style="margin-left:auto;font-size:0.68rem;color:var(--muted);
+            font-feature-settings:'tnum';">
+        {st.session_state.doc_count} doc{"s" if st.session_state.doc_count!=1 else ""}
+        &nbsp;·&nbsp; {n_chunks} chunks
       </span>
     </div>
     """, unsafe_allow_html=True)
 
-    # Upload
+    # ── Upload section ────────────────────────────────────────────────────────
     st.markdown("""
-    <p style="font-size:0.7rem;color:#2a4a6a;text-transform:uppercase;
-       letter-spacing:0.1em;margin:0 12px 8px;font-weight:600;">📄 Upload Documents</p>
+    <div style="padding:0 16px 8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <div style="width:18px;height:1px;background:var(--gold);"></div>
+        <span style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;
+              letter-spacing:0.14em;font-weight:600;">Upload Documents</span>
+      </div>
+    </div>
     """, unsafe_allow_html=True)
 
-    uploaded_files = st.file_uploader(
-        "Upload",
-        type=["pdf", "txt", "docx", "md"],
-        accept_multiple_files=True,
-        label_visibility="collapsed",
+    uploaded = st.file_uploader(
+        "docs", type=["pdf","txt","docx","md"],
+        accept_multiple_files=True, label_visibility="collapsed"
     )
 
-    if uploaded_files:
+    if uploaded:
         st.markdown(f"""
-        <div style="margin:4px 12px 8px;font-size:0.73rem;color:#3a6a8a;">
-          {len(uploaded_files)} file{"s" if len(uploaded_files) > 1 else ""} selected
+        <div style="margin:4px 16px 10px;padding:6px 12px;background:var(--ivory3);
+             border-radius:6px;font-size:0.72rem;color:var(--stone);">
+          {len(uploaded)} file{"s" if len(uploaded)>1 else ""} selected
         </div>""", unsafe_allow_html=True)
 
-        if st.button("⚡ Index Documents", key="index"):
-            progress = st.progress(0)
-            indexed = 0
-            for i, f in enumerate(uploaded_files):
-                with st.spinner(f"Indexing {f.name}…"):
-                    count, err = index_file(f.read(), f.name, ns)
+        if st.button("Index Documents", key="idx", type="primary"):
+            bar = st.progress(0)
+            ok = 0
+            for i, f in enumerate(uploaded):
+                with st.spinner(f"Processing {f.name}…"):
+                    cnt, err = index_file(f.read(), f.name, ns)
                     if err:
-                        st.error(f"✗ {f.name}: {err}")
+                        st.error(f"Failed: {f.name}")
                     else:
-                        st.success(f"✓ {f.name} · {count} chunks")
-                        indexed += 1
+                        st.success(f"✓ {f.name}  ·  {cnt} chunks")
+                        ok += 1
                         st.session_state.doc_count += 1
-                progress.progress((i + 1) / len(uploaded_files))
-            if indexed:
-                st.balloons()
+                bar.progress((i+1)/len(uploaded))
+            if ok: st.balloons()
 
     st.markdown("<hr>", unsafe_allow_html=True)
 
-    # Last sources panel
-    if st.session_state.last_sources:
+    # ── Sources panel ─────────────────────────────────────────────────────────
+    if st.session_state.last_src:
         st.markdown("""
-        <p style="font-size:0.7rem;color:#2a4a6a;text-transform:uppercase;
-           letter-spacing:0.1em;margin:0 12px 8px;font-weight:600;">📚 Last Sources</p>
-        """, unsafe_allow_html=True)
+        <div style="padding:0 16px 10px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <div style="width:18px;height:1px;background:var(--gold);"></div>
+            <span style="font-size:0.65rem;color:var(--muted);text-transform:uppercase;
+                  letter-spacing:0.14em;font-weight:600;">Last Retrieved</span>
+          </div>
+        </div>""", unsafe_allow_html=True)
 
-        seen: set = set()
-        for src in st.session_state.last_sources[:4]:
-            key = f"{src['source']}-{src.get('page', '')}"
-            if key in seen:
-                continue
-            seen.add(key)
-            page_str = f" · p.{src['page']}" if src.get("page") else ""
-            score = float(src.get("score", 0.5))
-            relevance = max(0, min(100, int(score * 100)))
+        seen = set()
+        for src in st.session_state.last_src[:3]:
+            k = f"{src['source']}-{src.get('page','')}"
+            if k in seen: continue
+            seen.add(k)
+            pg = f" · p.{src['page']}" if src.get("page") else ""
+            rel = max(0, min(100, int(float(src.get("score",0.5))*100)))
             st.markdown(f"""
-            <div style="margin:0 12px 7px;padding:9px 12px;background:#0a1020;
-                 border:1px solid #0f1824;border-radius:9px;">
-              <div style="font-size:0.73rem;color:#4a8abf;font-weight:500;
-                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                {src['source']}{page_str}
+            <div style="margin:0 16px 8px;padding:10px 13px;background:var(--white);
+                 border:1px solid var(--border);border-radius:9px;
+                 box-shadow:var(--shadow);transition:transform 0.15s;"
+                 onmouseover="this.style.transform='translateY(-1px)'"
+                 onmouseout="this.style.transform='translateY(0)'">
+              <div style="font-size:0.72rem;color:var(--charcoal);font-weight:500;
+                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                   margin-bottom:6px;">{src['source']}{pg}</div>
+              <div style="height:2px;background:var(--ivory3);border-radius:2px;">
+                <div style="width:{rel}%;height:100%;border-radius:2px;
+                     background:linear-gradient(90deg,var(--charcoal),var(--gold));
+                     transition:width 0.8s ease;"></div>
               </div>
-              <div style="margin-top:5px;height:2px;background:#0f1824;border-radius:2px;">
-                <div style="width:{relevance}%;height:100%;
-                     background:linear-gradient(90deg,#00d4ff,#0080ff);
-                     border-radius:2px;"></div>
-              </div>
-              <div style="font-size:0.63rem;color:#1a3050;margin-top:3px;">
-                {relevance}% relevance
-              </div>
+              <div style="font-size:0.62rem;color:var(--muted);margin-top:3px;
+                   font-feature-settings:'tnum';">{rel}% relevance</div>
             </div>""", unsafe_allow_html=True)
         st.markdown("<hr>", unsafe_allow_html=True)
 
-    # Controls
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🗑 Clear Chat"):
+    # ── Controls ──────────────────────────────────────────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Clear Chat", key="clr"):
             st.session_state.messages = []
-            st.session_state.last_sources = []
+            st.session_state.last_src = []
             st.rerun()
-    with col2:
-        if st.button("＋ New Session"):
-            st.session_state.session_id = str(uuid.uuid4())
+    with c2:
+        if st.button("New Session", key="new"):
+            st.session_state.sid = str(uuid.uuid4())
             st.session_state.messages = []
-            st.session_state.last_sources = []
+            st.session_state.last_src = []
             st.rerun()
 
     st.markdown(f"""
-    <div style="padding:10px 12px 24px;">
-      <div style="font-size:0.62rem;color:#1a3050;
-           font-family:monospace;line-height:2.2;">
-        USER&nbsp;&nbsp;{st.session_state.user_id[:16]}…<br>
-        SESSION&nbsp;{st.session_state.session_id[:16]}…
+    <div style="padding:12px 16px 28px;">
+      <div style="font-size:0.58rem;color:var(--border);
+           font-family:monospace;line-height:2.2;user-select:none;">
+        {st.session_state.uid[:22]}…
       </div>
     </div>""", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN CHAT AREA
+#  MAIN AREA
 # ══════════════════════════════════════════════════════════════════════════════
+
+# ── Page header ───────────────────────────────────────────────────────────────
 st.markdown("""
-<div style="padding:24px 36px 0;border-bottom:1px solid #0f1824;margin-bottom:4px;">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">
-    <h1 style="font-family:'Syne',sans-serif;font-size:1.55rem;font-weight:800;
-         color:#e8f4ff;letter-spacing:-0.02em;margin:0;">Document Intelligence</h1>
-    <span style="font-size:0.65rem;color:#3a5a7a;text-transform:uppercase;
-          letter-spacing:0.1em;padding:3px 10px;border:1px solid #1a2a40;
-          border-radius:4px;font-weight:600;">DocSage</span>
+<div class="anim-fade-up" style="padding:36px 52px 0;">
+  <div style="display:flex;align-items:baseline;gap:16px;margin-bottom:6px;">
+    <h1 style="font-family:'Cormorant Garamond',serif;font-size:2.2rem;
+         font-weight:600;color:var(--charcoal);letter-spacing:-0.03em;
+         line-height:1;margin:0;">
+      Document Intelligence
+    </h1>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+      <div style="width:40px;height:1px;background:var(--gold);
+           animation:goldLine 0.8s ease 0.3s both;"></div>
+      <span style="font-size:0.6rem;color:var(--gold);text-transform:uppercase;
+            letter-spacing:0.16em;font-weight:600;">Beta</span>
+    </div>
   </div>
-  <p style="font-size:0.82rem;color:#2a4a6a;margin:0 0 18px;">
-    Upload documents · Ask anything · Get cited answers
+  <p style="font-size:0.84rem;color:var(--muted);margin:0 0 22px;
+       font-weight:400;letter-spacing:0.01em;">
+    Upload documents &nbsp;·&nbsp; Ask questions &nbsp;·&nbsp; Get precise, cited answers
   </p>
+  <div style="height:1px;background:linear-gradient(90deg,var(--border),transparent);
+       margin-bottom:0;"></div>
 </div>
 """, unsafe_allow_html=True)
 
-# Empty state
+
+# ── Empty state ───────────────────────────────────────────────────────────────
 if not st.session_state.messages:
     st.markdown("""
-    <div style="display:flex;flex-direction:column;align-items:center;
-         padding:60px 20px;text-align:center;">
-      <div style="width:58px;height:58px;
-           background:linear-gradient(135deg,#00d4ff14,#0080ff14);
-           border:1px solid #1a3a5a;border-radius:16px;
+    <div class="anim-fade-up" style="display:flex;flex-direction:column;
+         align-items:center;padding:80px 24px 40px;text-align:center;">
+
+      <!-- Icon -->
+      <div style="width:60px;height:60px;border:1px solid var(--border);
+           border-radius:16px;background:var(--white);
            display:flex;align-items:center;justify-content:center;
-           font-size:26px;margin-bottom:18px;">⚡</div>
-      <h2 style="font-family:'Syne',sans-serif;font-size:1.1rem;
-           font-weight:700;color:#3a6a8a;margin-bottom:8px;">Ready to answer</h2>
-      <p style="font-size:0.83rem;color:#1a3a5a;max-width:380px;
-           line-height:1.7;margin-bottom:26px;">
-        Upload a PDF, Word doc, or text file from the sidebar,<br>
-        then ask me anything about its contents.
+           box-shadow:var(--shadow2);margin-bottom:22px;">
+        <span style="font-family:'Cormorant Garamond',serif;font-size:24px;
+              color:var(--gold);font-weight:500;">◈</span>
+      </div>
+
+      <h2 style="font-family:'Cormorant Garamond',serif;font-size:1.35rem;
+           font-weight:500;color:var(--charcoal);margin-bottom:8px;
+           letter-spacing:-0.01em;">
+        Ready to assist
+      </h2>
+      <p style="font-size:0.83rem;color:var(--muted);max-width:340px;
+           line-height:1.75;margin-bottom:30px;">
+        Upload a PDF, Word document, or text file from the sidebar,<br>
+        then ask anything about its contents.
       </p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
-        <span style="padding:8px 16px;background:#0a1020;border:1px solid #0f2030;
-              border-radius:20px;font-size:0.75rem;color:#2a5a7a;">
-          "Summarise the key points"
+
+      <!-- Suggestion chips -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
+           max-width:520px;">
+        <span style="padding:8px 18px;background:var(--white);
+              border:1px solid var(--border);border-radius:24px;
+              font-size:0.75rem;color:var(--stone);
+              box-shadow:var(--shadow);cursor:default;
+              transition:all 0.2s;"
+              onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--charcoal)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--stone)'">
+          Summarise this document
         </span>
-        <span style="padding:8px 16px;background:#0a1020;border:1px solid #0f2030;
-              border-radius:20px;font-size:0.75rem;color:#2a5a7a;">
-          "What does section 3 say?"
+        <span style="padding:8px 18px;background:var(--white);
+              border:1px solid var(--border);border-radius:24px;
+              font-size:0.75rem;color:var(--stone);
+              box-shadow:var(--shadow);cursor:default;
+              transition:all 0.2s;"
+              onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--charcoal)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--stone)'">
+          What are the key findings?
         </span>
-        <span style="padding:8px 16px;background:#0a1020;border:1px solid #0f2030;
-              border-radius:20px;font-size:0.75rem;color:#2a5a7a;">
-          "List all requirements"
+        <span style="padding:8px 18px;background:var(--white);
+              border:1px solid var(--border);border-radius:24px;
+              font-size:0.75rem;color:var(--stone);
+              box-shadow:var(--shadow);cursor:default;
+              transition:all 0.2s;"
+              onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--charcoal)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--stone)'">
+          List all requirements
+        </span>
+        <span style="padding:8px 18px;background:var(--white);
+              border:1px solid var(--border);border-radius:24px;
+              font-size:0.75rem;color:var(--stone);
+              box-shadow:var(--shadow);cursor:default;
+              transition:all 0.2s;"
+              onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--charcoal)'"
+              onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--stone)'">
+          Compare section 2 and 3
         </span>
       </div>
-    </div>""", unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
-# Render chat history
-for msg in st.session_state.messages:
+
+# ── Chat messages ──────────────────────────────────────────────────────────────
+for idx, msg in enumerate(st.session_state.messages):
+    delay = min(idx * 0.05, 0.3)
     if msg["role"] == "user":
-        user_bubble(msg["content"])
+        st.markdown(f"""
+        <div class="anim-fade-up" style="display:flex;justify-content:flex-end;
+             padding:8px 52px;animation-delay:{delay}s;">
+          <div style="max-width:62%;padding:13px 20px;
+               background:var(--charcoal);
+               border-radius:20px 20px 4px 20px;
+               font-size:0.875rem;color:var(--ivory);line-height:1.65;
+               box-shadow:0 4px 16px rgba(28,25,23,0.18);
+               font-family:'DM Sans',sans-serif;">
+            {msg['content']}
+          </div>
+        </div>""", unsafe_allow_html=True)
     else:
-        ai_bubble(msg["content"])
+        st.markdown(f"""
+        <div class="anim-fade-up" style="display:flex;gap:14px;padding:8px 52px;
+             align-items:flex-start;animation-delay:{delay}s;">
+          <div style="width:30px;height:30px;flex-shrink:0;margin-top:2px;
+               background:var(--white);border:1px solid var(--border);
+               border-radius:9px;box-shadow:var(--shadow);
+               display:flex;align-items:center;justify-content:center;">
+            <span style="font-family:'Cormorant Garamond',serif;font-size:14px;
+                  color:var(--gold);font-weight:500;">◈</span>
+          </div>
+          <div style="max-width:74%;padding:14px 20px;background:var(--white);
+               border:1px solid var(--border);
+               border-radius:4px 20px 20px 20px;
+               font-size:0.865rem;color:var(--charcoal);line-height:1.78;
+               box-shadow:var(--shadow);
+               font-family:'DM Sans',sans-serif;">
+            {msg['content']}
+          </div>
+        </div>""", unsafe_allow_html=True)
 
-st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
-# ── Chat input ────────────────────────────────────────────────────────────────
+
+# ── Input ──────────────────────────────────────────────────────────────────────
 query = st.chat_input("Ask anything about your documents…")
 
 if query:
-    # Show user message immediately
-    user_bubble(query)
-    st.session_state.messages.append({"role": "user", "content": query})
-
-    # Thinking placeholder
-    resp_slot = st.empty()
-    resp_slot.markdown("""
-    <div style="display:flex;gap:10px;padding:6px 36px;align-items:flex-start;">
-      <div style="width:26px;height:26px;flex-shrink:0;margin-top:6px;
-           background:linear-gradient(135deg,#00d4ff,#0080ff);border-radius:7px;
-           display:flex;align-items:center;justify-content:center;font-size:12px;">⚡</div>
-      <div style="padding:12px 18px;background:#0a1020;border:1px solid #0f1824;
-           border-radius:4px 18px 18px 18px;font-size:0.86rem;color:#2a5a7a;">
-        Searching documents…
+    # User bubble
+    st.markdown(f"""
+    <div class="anim-fade-up" style="display:flex;justify-content:flex-end;
+         padding:8px 52px;">
+      <div style="max-width:62%;padding:13px 20px;background:var(--charcoal);
+           border-radius:20px 20px 4px 20px;font-size:0.875rem;
+           color:var(--ivory);line-height:1.65;
+           box-shadow:0 4px 16px rgba(28,25,23,0.18);">
+        {query}
       </div>
     </div>""", unsafe_allow_html=True)
 
-    # Retrieve and generate
-    chunks = semantic_search(query, ns, k=6)
-    st.session_state.last_sources = chunks
+    st.session_state.messages.append({"role": "user", "content": query})
+
+    # Thinking indicator
+    slot = st.empty()
+    slot.markdown("""
+    <div class="anim-fade-in" style="display:flex;gap:14px;padding:8px 52px;
+         align-items:flex-start;">
+      <div style="width:30px;height:30px;flex-shrink:0;margin-top:2px;
+           background:var(--white);border:1px solid var(--border);
+           border-radius:9px;box-shadow:var(--shadow);
+           display:flex;align-items:center;justify-content:center;">
+        <span style="font-family:'Cormorant Garamond',serif;font-size:14px;
+              color:var(--gold);font-weight:500;">◈</span>
+      </div>
+      <div style="padding:16px 20px;background:var(--white);
+           border:1px solid var(--border);border-radius:4px 20px 20px 20px;
+           box-shadow:var(--shadow);">
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    # Retrieve & generate
+    chunks = search_store(query, ns)
+    st.session_state.last_src = chunks
 
     with st.spinner(""):
-        answer = generate_answer(query, chunks, st.session_state.messages)
+        resp = generate(query, chunks, st.session_state.messages)
 
-    # Final answer
-    resp_slot.empty()
-    ai_bubble(answer)
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    slot.empty()
+
+    # AI response
+    st.markdown(f"""
+    <div class="anim-fade-up" style="display:flex;gap:14px;padding:8px 52px;
+         align-items:flex-start;">
+      <div style="width:30px;height:30px;flex-shrink:0;margin-top:2px;
+           background:var(--white);border:1px solid var(--border);
+           border-radius:9px;box-shadow:var(--shadow);
+           display:flex;align-items:center;justify-content:center;">
+        <span style="font-family:'Cormorant Garamond',serif;font-size:14px;
+              color:var(--gold);font-weight:500;">◈</span>
+      </div>
+      <div style="max-width:74%;padding:14px 20px;background:var(--white);
+           border:1px solid var(--border);border-radius:4px 20px 20px 20px;
+           font-size:0.865rem;color:var(--charcoal);line-height:1.78;
+           box-shadow:var(--shadow);">
+        {resp}
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    st.session_state.messages.append({"role": "assistant", "content": resp})
 
     # Sources expander
     if chunks:
-        seen: set = set()
-        unique_sources = []
+        seen, uniq = set(), []
         for s in chunks:
-            k = f"{s['source']}-{s.get('page', '')}"
+            k = f"{s['source']}-{s.get('page','')}"
             if k not in seen:
                 seen.add(k)
-                unique_sources.append(s)
+                uniq.append(s)
 
-        with st.expander(
-            f"📚 {len(unique_sources)} source{'s' if len(unique_sources) > 1 else ''} retrieved",
-            expanded=False,
-        ):
-            for i, src in enumerate(unique_sources, 1):
-                page_str = f" — page {src['page']}" if src.get("page") else ""
-                score = float(src.get("score", 0.5))
-                relevance = max(0, min(100, int(score * 100)))
-                preview = str(src.get("content", ""))[:250]
-                if len(str(src.get("content", ""))) > 250:
-                    preview += "…"
+        with st.expander(f"◈  {len(uniq)} source{'s' if len(uniq)>1 else ''} consulted", expanded=False):
+            for i, src in enumerate(uniq, 1):
+                pg = f" — page {src['page']}" if src.get("page") else ""
+                rel = max(0, min(100, int(float(src.get("score",0.5))*100)))
+                prev = str(src.get("content",""))[:260]
                 st.markdown(f"""
-                <div style="padding:10px 14px;background:#060910;
-                     border:1px solid #0f1824;border-radius:8px;margin-bottom:8px;">
+                <div style="padding:12px 16px;background:var(--ivory2);
+                     border:1px solid var(--border);border-radius:9px;
+                     margin-bottom:9px;transition:box-shadow 0.2s;">
                   <div style="display:flex;justify-content:space-between;
-                       align-items:center;margin-bottom:6px;">
-                    <span style="font-size:0.78rem;color:#00d4ff;font-weight:600;">
-                      [{i}] {src['source']}{page_str}
+                       align-items:center;margin-bottom:7px;">
+                    <span style="font-size:0.77rem;color:var(--charcoal);
+                          font-weight:600;font-family:'DM Sans',sans-serif;">
+                      {i}.&nbsp; {src['source']}{pg}
                     </span>
-                    <span style="font-size:0.68rem;color:#2a5070;
-                           background:#0a1020;padding:2px 8px;border-radius:4px;">
-                      {relevance}% match
+                    <span style="font-size:0.65rem;color:var(--gold);
+                           background:var(--white);padding:2px 9px;
+                           border:1px solid var(--border);border-radius:20px;
+                           font-weight:600;letter-spacing:0.04em;">
+                      {rel}%
                     </span>
                   </div>
-                  <p style="font-size:0.76rem;color:#3a6a8a;line-height:1.55;margin:0;">
-                    {preview}
+                  <div style="height:2px;background:var(--ivory3);
+                       border-radius:2px;margin-bottom:8px;">
+                    <div style="width:{rel}%;height:100%;border-radius:2px;
+                         background:linear-gradient(90deg,var(--charcoal),var(--gold));"></div>
+                  </div>
+                  <p style="font-size:0.75rem;color:var(--stone);
+                       line-height:1.65;margin:0;font-style:italic;">
+                    "{prev}{'…' if len(str(src.get('content','')))>260 else ''}"
                   </p>
                 </div>""", unsafe_allow_html=True)
 
